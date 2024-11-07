@@ -1,8 +1,7 @@
 
 ---
 
-# ![image](https://github.com/user-attachments/assets/7f79b902-b432-4550-9ed0-735a7106fa9b)
- Visual Foundation Model with Bayesian Inference
+# 🌌 Visual Foundation Model with Bayesian Inference
 
 **_Real-world Image Classification with Distributed PyTorch Training_**
 
