@@ -5,13 +5,14 @@ import torchvision
 
 # Custom Model with ResNet50 Encoder and VAE Reparameterization
 class ResNet50VAEClassifier(nn.Module):
-    def __init__(self, latent_dim=128, num_classes=10):
+    def __init__(self, latent_dim=64, num_classes=10):
         super(ResNet50VAEClassifier, self).__init__()
         # Load ResNet50 and remove fully connected layer
         self.encoder = torchvision.models.resnet.resnet50(weights=None)
         self.encoder.fc = nn.Identity()  # Removing FC layer for feature extraction
-        self.fc_mu = nn.Linear(2048, latent_dim)  # Learned mean
-        self.fc_logvar = nn.Linear(2048, latent_dim)  # Learned log variance
+        self.compress = nn.Linear(2048, latent_dim)
+        self.fc_mu = nn.Linear(latent_dim, latent_dim)  # Learned mean
+        self.fc_logvar = nn.Linear(latent_dim, latent_dim)  # Learned log variance
         self.fc_decision = nn.Linear(latent_dim, num_classes)  # Decision layer
 
     def reparameterize(self, mu, logvar):
@@ -20,11 +21,21 @@ class ResNet50VAEClassifier(nn.Module):
         return mu + eps * std
 
     def forward(self, x):
+        feature_maps = []
+
         features = self.encoder(x)  # Extract features
+        # Go through layers of ResNet50 and store outputs of the last 5 layers
+        # for name, layer in list(self.encoder.named_children())[:-1]:  # Exclude the final FC layer
+        #     x = layer(x)
+        #     feature_maps.append(x)
+        
+        # # Keep only the last 5 feature maps
+        # feature_maps = feature_maps[-5:]
+        features = self.compress(features)
         mu = self.fc_mu(features)  # Mean
         logvar = self.fc_logvar(features)  # Log variance
         z = self.reparameterize(mu, logvar)  # New latent vector
-        return self.fc_decision(z), mu, logvar  # Output logits and latent parameters
+        return feature_maps, self.fc_decision(z), mu, logvar  # Output logits and latent parameters
     
 # __all__ = []
 

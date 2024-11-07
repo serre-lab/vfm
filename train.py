@@ -6,10 +6,14 @@ import torch.distributed as dist
 from tqdm import tqdm
 import wandb
 import os
+from argparse import ArgumentParser
 
 from src.data import OrigPlank
-from src.models import ResNet50Classifier
-from src.utils import MetricLogger
+from src.models import ResNet50Classifier, ResNet50VAEClassifier
+from src.utils import MetricLogger, kld
+
+parser = ArgumentParser(description = "Visual Foundation Model Training")
+parser.add_argument("--vae_training", action = "store_true", default = "False", help = "training strategy")
 
 
 def setup():
@@ -28,7 +32,7 @@ def unwrap_model(model):
 
 # Training function with a progress bar
 def train_one_epoch(
-    model,
+    args, model,
     dataloader,
     criterion,
     optimizer,
@@ -45,19 +49,32 @@ def train_one_epoch(
 
     for step, (images, labels) in enumerate(progress_bar):
         images, labels = images.to(device).float(), labels.to(device)
+        
         optimizer.zero_grad()
-        outputs, _ = model(images)
+        
+        if args.vae_training:
+            _, outputs, mu, logvar = model(images)
+        else:
+            outputs, _ = model(images)
 
         loss = criterion(outputs, labels)
-        loss.backward()
+        loss.backward(retain_graph = True)
+        running_loss += loss.item()
+        batch_loss = loss.item()
+        
+        if args.vae_training:
+            loss_kld = kld(mu, logvar)
+            loss_kld.backward()
+            running_loss += loss_kld.item()
+            batch_loss += loss_kld.item()
+        
         optimizer.step()
 
-        running_loss += loss.item()
         _, predicted = torch.max(outputs, 1)
         correct += (predicted == labels).sum().item()
         total += labels.size(0)
 
-        batch_loss = loss.item() / labels.size(0)
+        batch_loss /= labels.size(0)
         batch_accuracy = 100 * correct / total
 
         metric_logger.add("train_loss", batch_loss)
@@ -71,10 +88,15 @@ def train_one_epoch(
                     "epoch": epoch + 1,
                 }
             )
+        if args.vae_training:
+            progress_bar.set_postfix(
+                {"Train Loss": batch_loss, "Train KLD": loss_kld.item(), "Train Accuracy": batch_accuracy}
+            )
+        else:
+            progress_bar.set_postfix(
+                {"Train Loss": batch_loss, "Train Accuracy": batch_accuracy}
+            )
 
-        progress_bar.set_postfix(
-            {"Train Loss": batch_loss, "Train Accuracy": batch_accuracy}
-        )
 
     avg_loss = metric_logger.average("train_loss")
     accuracy = metric_logger.average("train_accuracy")
@@ -82,7 +104,15 @@ def train_one_epoch(
 
 
 def test(
-    model, dataloader, criterion, metric_logger, epoch, epochs, device="cuda", rank=0
+    args, 
+    model, 
+    dataloader, 
+    criterion, 
+    metric_logger, 
+    epoch, 
+    epochs, 
+    device="cuda", 
+    rank=0
 ):
     model.eval()
     total = correct = 0.0
@@ -91,15 +121,25 @@ def test(
     with torch.no_grad():
         for images, labels in progress_bar:
             images, labels = images.to(device).float(), labels.to(device)
-            outputs, _ = model(images)
+
+            if args.vae_training:
+                _, outputs, mu, logvar = model(images)
+            else:
+                outputs, _ = model(images)
+            
             loss = criterion(outputs, labels)
+            batch_loss = loss.item()
             # running_loss += loss.item()
+
+            if args.vae_training:
+                loss_kld = kld(mu, logvar)
+                batch_loss += loss_kld.item()
 
             _, predicted = torch.max(outputs, 1)
             correct += (predicted == labels).sum().item()
             total += labels.size(0)
 
-            batch_loss = loss.item() / labels.size(0)
+            batch_loss /= labels.size(0)
             batch_accuracy = 100 * correct / total
 
             metric_logger.add("test_loss", batch_loss)
@@ -108,9 +148,14 @@ def test(
             if rank == 0:
                 wandb.log({"test_loss": batch_loss, "test_accuracy": batch_accuracy})
 
-            progress_bar.set_postfix(
-                {"Test Loss": batch_loss, "Test Accuracy": batch_accuracy}
-            )
+            if args.vae_training:
+                progress_bar.set_postfix(
+                    {"Test Loss": batch_loss,  "Test KLD": loss_kld.item(), "Test Accuracy": batch_accuracy}
+                )
+            else:
+                progress_bar.set_postfix(
+                    {"Test Loss": batch_loss, "Test Accuracy": batch_accuracy}
+                )
 
     avg_loss = metric_logger.global_average("test_loss")
     accuracy = metric_logger.global_average("test_accuracy")
@@ -125,7 +170,9 @@ def main():
     world_size = dist.get_world_size()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    epochs = 50
+    args = parser.parse_args()
+
+    epochs = 100
     dataset_dir = "data/dataset/"
     dataset = OrigPlank(path=dataset_dir, transform=None)
 
@@ -143,8 +190,14 @@ def main():
     train_dataloader = DataLoader(train_dataset, batch_size=32, sampler=train_sampler)
     test_dataloader = DataLoader(test_dataset, batch_size=32, sampler=test_sampler)
 
-    modelname = "resnet50_np_cls"
-    model = ResNet50Classifier(num_classes=2).to(device)
+
+    if args.vae_training:
+        modelname = "resnet50vae_np_cls"
+        model = ResNet50VAEClassifier(num_classes = 2).to(device)
+    else:
+        modelname = "resnet50_np_cls"
+        model = ResNet50Classifier(num_classes = 2).to(device)
+    
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], find_unused_parameters=False)
 
     criterion = nn.CrossEntropyLoss()
@@ -165,6 +218,7 @@ def main():
     # Training the model
     for e in range(epochs):
         train_loss, train_acc = train_one_epoch(
+            args,
             model,
             train_dataloader,
             criterion,
@@ -181,6 +235,7 @@ def main():
                 f"Epoch {e+1}/{epochs} - Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.2f}%"
             )
         _, test_acc = test(
+            args,
             model,
             test_dataloader,
             criterion,
