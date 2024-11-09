@@ -36,4 +36,4 @@ class OrigPlank(Dataset):
         img = load_image(file_name)
         if self.transform:
             img = self.transform(img)
-        return img, label, file_name
+        return img, label

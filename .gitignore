@@ -2,3 +2,5 @@
 /pretrained_models
 /wandb
 /data
+/feature_maps
+/attributions

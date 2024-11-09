@@ -25,12 +25,12 @@ class ResNet50VAEClassifier(nn.Module):
 
         features = self.encoder(x)  # Extract features
         # Go through layers of ResNet50 and store outputs of the last 5 layers
-        # for name, layer in list(self.encoder.named_children())[:-1]:  # Exclude the final FC layer
-        #     x = layer(x)
-        #     feature_maps.append(x)
+        for name, layer in list(self.encoder.named_children())[:-1]:  # Exclude the final FC layer
+            x = layer(x)
+            feature_maps.append(x)
         
         # # Keep only the last 5 feature maps
-        # feature_maps = feature_maps[-5:]
+        feature_maps = feature_maps[5]
         features = self.compress(features)
         mu = self.fc_mu(features)  # Mean
         logvar = self.fc_logvar(features)  # Log variance

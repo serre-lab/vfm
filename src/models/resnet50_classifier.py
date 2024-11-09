@@ -21,13 +21,13 @@ class ResNet50Classifier(nn.Module):
         # Go through layers of ResNet50 and store outputs of the last 5 layers
         for name, layer in list(self.encoder.named_children())[:-1]:  # Exclude the final FC layer
             x = layer(x)
-            feature_maps.append(x)
+            # feature_maps.append(x)
         
-        # Keep only the last 5 feature maps
-        feature_maps = feature_maps[-5:]
+        # # Keep only the last 5 feature maps
+        # feature_maps = feature_maps[-5:]
         
         # Final decision layer output
-        logits = self.fc_decision(feature_maps[-1].flatten(1))  # Flatten before feeding into FC
+        logits = self.fc_decision(x.flatten(1))  # Flatten before feeding into FC
         
         return logits, feature_maps
     
