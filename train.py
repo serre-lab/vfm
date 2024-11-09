@@ -14,6 +14,7 @@ from src.utils import MetricLogger, kld
 
 parser = ArgumentParser(description = "Visual Foundation Model Training")
 parser.add_argument("--vae_training", action = "store_true", default = "False", help = "training strategy")
+parser.add_argument("--w2", default = 1e-5, help = "KLD loss weight")
 
 
 def setup():
@@ -58,15 +59,17 @@ def train_one_epoch(
             outputs, _ = model(images)
 
         loss = criterion(outputs, labels)
-        loss.backward(retain_graph = True)
         running_loss += loss.item()
         batch_loss = loss.item()
         
         if args.vae_training:
-            loss_kld = kld(mu, logvar)
-            loss_kld.backward()
+            loss_kld = args.w2 * kld(mu, logvar)
+            final_loss = loss + loss_kld
+            final_loss.backward()
             running_loss += loss_kld.item()
             batch_loss += loss_kld.item()
+        else:
+            loss.backward()
         
         optimizer.step()
 
@@ -132,7 +135,7 @@ def test(
             # running_loss += loss.item()
 
             if args.vae_training:
-                loss_kld = kld(mu, logvar)
+                loss_kld = args.w2 * kld(mu, logvar)
                 batch_loss += loss_kld.item()
 
             _, predicted = torch.max(outputs, 1)

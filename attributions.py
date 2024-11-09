@@ -23,10 +23,11 @@ def test(model, dataloader, device='cuda'):
     progress_bar = tqdm(dataloader)
     count = 0
     with torch.no_grad():
-        for images, labels in progress_bar:
+        for images, labels, filename in progress_bar:
             images, labels = images.to(device).float(), labels.to(device)
             outputs, feature_maps = model(images)
             images = images.permute(0,2,3,1).detach().cpu().numpy().astype(np.uint8)
+            import ipdb;ipdb.set_trace()
             # feature_maps = feature_maps.permute(0,2,3,1)
             # feature_maps = feature_maps.detach().cpu().numpy()
 
@@ -52,6 +53,7 @@ def main():
     _, test_dataset = random_split(dataset, [train_size, test_size])
 
     test_dataloader = DataLoader(test_dataset, batch_size=32)
+
 
     modelname = "resnet50_np_cls"
     model = ResNet50Classifier(num_classes=2).to("cuda:0")
