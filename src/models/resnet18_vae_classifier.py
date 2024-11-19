@@ -4,13 +4,13 @@ from timm.models._registry import register_model
 import torchvision
 
 # Custom Model with ResNet50 Encoder and VAE Reparameterization
-class ResNet50VAEClassifier(nn.Module):
+class ResNet18VAEClassifier(nn.Module):
     def __init__(self, latent_dim=64, num_classes=10):
-        super(ResNet50VAEClassifier, self).__init__()
+        super(ResNet18VAEClassifier, self).__init__()
         # Load ResNet50 and remove fully connected layer
-        self.encoder = torchvision.models.resnet.resnet50(weights=None)
+        self.encoder = torchvision.models.resnet.resnet18(weights=None)
         self.encoder.fc = nn.Identity()  # Removing FC layer for feature extraction
-        self.compress = nn.Linear(2048, latent_dim)
+        self.compress = nn.Linear(512, latent_dim)
         self.fc_mu = nn.Linear(latent_dim, latent_dim)  # Learned mean
         self.fc_logvar = nn.Linear(latent_dim, latent_dim)  # Learned log variance
         self.fc_decision = nn.Linear(latent_dim, num_classes)  # Decision layer
@@ -45,16 +45,22 @@ class ResNet50VAEClassifier(nn.Module):
 #     model = ResNet50VAEClassifier(n_classes=1)
 #     return model
     
-class ResNet50VAERegressor(nn.Module):
-    def __init__(self, latent_dim=1024, num_classes=10, inference = False, n_samples = 100):
-        super(ResNet50VAERegressor, self).__init__()
+class ResNet18VAERegressor(nn.Module):
+    def __init__(self, latent_dim=256, num_classes=10, inference = False, n_samples = 100):
+        super(ResNet18VAERegressor, self).__init__()
         # Load ResNet50 and remove fully connected layer
-        self.encoder = torchvision.models.resnet.resnet50(weights=None)
+        self.encoder = torchvision.models.resnet.resnet18(weights=None)
         self.encoder.fc = nn.Identity()  # Removing FC layer for feature extraction
-        self.compress = nn.Linear(2048, latent_dim)
+        self.compress = nn.Linear(512, latent_dim)
         self.fc_mu = nn.Linear(latent_dim, latent_dim)  # Learned mean
         self.fc_logvar = nn.Linear(latent_dim, latent_dim)  # Learned log variance
-        self.fc_decision = nn.Linear(latent_dim, num_classes)  # Decision layer
+        self.fc_decision = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim // 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim // 2, latent_dim // 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim // 2, 32)
+        )  # Decision layer
         self.inference = inference
         self.n_samples = n_samples
 
