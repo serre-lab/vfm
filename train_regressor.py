@@ -10,12 +10,13 @@ from argparse import ArgumentParser
 
 from src.data import OrigPlank, OrigPlank2, transform
 from src.models import ResNet50Regressor, ResNet50VAERegressor, ResNet18VAERegressor
-from src.utils import MetricLogger, kld
+from src.utils import MetricLogger, KLD
 
 parser = ArgumentParser(description = "Visual Foundation Model Training")
 parser.add_argument("--vae_training", action = "store_true", default = False, help = "training strategy")
 parser.add_argument("--w2", type = float, default = 1e-3, help = "KLD loss weight")
 
+kld = KLD(std = 2).kld
 
 def setup():
     dist.init_process_group("nccl")
@@ -43,11 +44,11 @@ def train_one_epoch(
     device="cuda",
     rank=0,
     log_interval=10,
+    global_step = None
 ):
     model.train()
-    running_loss = 0.0
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}", position=rank)
-    start_step = epoch * len(dataloader) + 1
+    
     for step, (images, labels, pos) in enumerate(progress_bar):
         images, labels, pos = images.to(device).float(), labels.to(device), pos.to(device)
         
@@ -58,46 +59,51 @@ def train_one_epoch(
         else:
             outputs, _ = model(images)
 
-        loss = criterion(outputs, pos)
-        running_loss += loss.item()
-        batch_loss = loss.item()
+        mse_loss = criterion(outputs, pos)
+        metric_logger.add("train_mse_loss", mse_loss.item())
         
         if args.vae_training:
-            loss_kld = args.w2 * kld(mu, logvar)
-            final_loss = loss + loss_kld
+            loss_kld = args.w2 * kld(mu, logvar) / labels.size(0)
+            final_loss = mse_loss + loss_kld
+            batch_loss = final_loss.item()
             final_loss.backward()
-            running_loss += loss_kld.item()
-            batch_loss += loss_kld.item()
+            metric_logger.add("train_loss", batch_loss)
+            metric_logger.add("train_kld_loss", loss_kld.item())
         else:
-            loss.backward()
+            mse_loss.backward()
         
         optimizer.step()
-
-
-        batch_loss /= labels.size(0)
-
-        metric_logger.add("train_mse_loss", batch_loss)
-
+        
         if rank == 0 and (step + 1) % log_interval == 0:
-            wandb.log(
+            global_step += 1
+            if args.vae_training:
+                wandb.log(
+                    {
+                        "train_mse_loss": mse_loss.item(), "epoch": epoch + 1, 
+                        "train_kld_loss": loss_kld.item(), "train_loss": batch_loss
+                    },
+                    step = global_step
+                )
+            else: 
+                wandb.log(
                 {
-                    "train_mse_loss": batch_loss,
+                    "train_mse_loss": mse_loss.item(),
                     "epoch": epoch + 1,
                 },
-                step=start_step + step
+                step = global_step
             )
         if args.vae_training:
             progress_bar.set_postfix(
-                {"Train MSE Loss": batch_loss, "Train KLD": loss_kld.item()}
+                {"Train MSE Loss": mse_loss.item(), "Train KLD": loss_kld.item(), "Train Loss": batch_loss}
             )
+            avg_loss = metric_logger.global_average("train_loss")
         else:
             progress_bar.set_postfix(
-                {"Train MSE Loss": batch_loss}
+                {"Train MSE Loss": mse_loss.item()}
             )
+            avg_loss = metric_logger.global_average("train_mse_loss")
 
-
-    avg_loss = metric_logger.global_average("train_mse_loss")
-    return avg_loss
+    return avg_loss, global_step
 
 
 def test(
@@ -110,11 +116,11 @@ def test(
     epochs, 
     device="cuda", 
     rank=0,
-    log_interval = 1
+    global_step = None,
 ):
     model.eval()
     progress_bar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}", position=rank)
-    start_step = epoch * len(dataloader) + 1
+
     with torch.no_grad():
         for step, (images, labels, pos) in enumerate(progress_bar):
             images, labels, pos = images.to(device).float(), labels.to(device), pos.to(device)
@@ -124,36 +130,43 @@ def test(
             else:
                 outputs, _ = model(images)
             
-            loss = criterion(outputs, pos)
-            batch_loss = loss.item()
-            # running_loss += loss.item()
+            mse_loss = criterion(outputs, pos)
+            metric_logger.add("test_mse_loss", mse_loss.item())
 
             if args.vae_training:
-                loss_kld = args.w2 * kld(mu, logvar)
-                batch_loss += loss_kld.item()
-
-            batch_loss /= labels.size(0)
- 
-            metric_logger.add("test_loss", batch_loss)
-
-            if rank == 0 and (step + 1) % log_interval == 0:
-                wandb.log({"test_mse_loss": batch_loss, "epoch": epoch + 1},
-                          step = start_step + step
-                )
+                loss_kld = args.w2 * kld(mu, logvar) / labels.size(0)
+                final_loss = mse_loss + loss_kld
+                batch_loss = final_loss.item()
+                metric_logger.add("test_kld_loss", loss_kld.item())
+                metric_logger.add("test_loss", final_loss.item())
+            
 
             if args.vae_training:
                 progress_bar.set_postfix(
-                    {"Test MSE Loss": batch_loss,  "Test KLD": loss_kld.item()}
+                    {"Test Loss": batch_loss,  "Test KLD": loss_kld.item(), "Test MSE Loss": mse_loss.item()}
                 )
             else:
                 progress_bar.set_postfix(
-                    {"Test MSE Loss": batch_loss}
+                    {"Test MSE Loss": mse_loss.item()}
                 )
+     
 
     avg_loss = metric_logger.global_average("test_loss")
+    avg_mse_loss = metric_logger.global_average("test_mse_loss")
+    avg_kld_loss = metric_logger.global_average("test_kld_loss")
     if rank == 0:
-        print(f"Test MSE Loss: {avg_loss:.4f}")
-    return avg_loss
+        print(f"Test MSE Loss: {avg_mse_loss:.4f}")
+        global_step += 1
+        if args.vae_training:
+            wandb.log(
+                {"test_mse_loss": avg_mse_loss, "test_kld_loss": avg_kld_loss, "test_loss": avg_loss},
+                step = global_step
+            )
+        else:
+            wandb.log({"test_mse_loss": avg_mse_loss},
+                    step = global_step
+            )
+    return avg_loss, global_step
 
 
 def main():
@@ -162,7 +175,7 @@ def main():
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
+    global_step = 0
     args = parser.parse_args()
 
     epochs = 100
@@ -193,7 +206,7 @@ def main():
     
     model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], find_unused_parameters=False)
 
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss(reduction = 'mean')
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     best_loss = float("inf")
@@ -214,7 +227,7 @@ def main():
     # Training the model
     for e in range(epochs):
         train_sampler.set_epoch(e)
-        train_loss = train_one_epoch(
+        train_loss, global_step = train_one_epoch(
             args,
             model,
             train_dataloader,
@@ -225,13 +238,14 @@ def main():
             epochs=epochs,
             device=device,
             rank=rank,
+            global_step = global_step
         )
 
         if rank == 0:
             print(
                 f"Epoch {e+1}/{epochs} - Train MSE Loss: {train_loss:.4f}"
             )
-        test_loss = test(
+        test_loss, global_step = test(
             args,
             model,
             test_dataloader,
@@ -241,6 +255,7 @@ def main():
             epochs,
             device,
             rank=rank,
+            global_step = global_step
         )
         
         if rank == 0 and  test_loss < best_loss:

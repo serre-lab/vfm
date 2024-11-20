@@ -46,7 +46,7 @@ class ResNet18VAEClassifier(nn.Module):
 #     return model
     
 class ResNet18VAERegressor(nn.Module):
-    def __init__(self, latent_dim=256, num_classes=10, inference = False, n_samples = 100):
+    def __init__(self, latent_dim=128, num_classes=10, inference = False, n_samples = 100):
         super(ResNet18VAERegressor, self).__init__()
         # Load ResNet50 and remove fully connected layer
         self.encoder = torchvision.models.resnet.resnet18(weights=None)
@@ -56,8 +56,10 @@ class ResNet18VAERegressor(nn.Module):
         self.fc_logvar = nn.Linear(latent_dim, latent_dim)  # Learned log variance
         self.fc_decision = nn.Sequential(
             nn.Linear(latent_dim, latent_dim // 2),
+            nn.BatchNorm1d(latent_dim // 2),
             nn.ReLU(),
             nn.Linear(latent_dim // 2, latent_dim // 2),
+            nn.BatchNorm1d(latent_dim // 2),
             nn.ReLU(),
             nn.Linear(latent_dim // 2, 32)
         )  # Decision layer
@@ -89,7 +91,9 @@ class ResNet18VAERegressor(nn.Module):
         if self.inference:
             for i in range(self.n_samples):
                 z = self.reparameterize(mu, logvar)  # New latent vector
-                trajectories.append(self.fc_decision(z))
-            return trajectories
+                trajectories.append(self.fc_decision(z).unsqueeze(0))
+            
+            trajectories = torch.vstack(trajectories)
+            return mu, logvar, trajectories
         else:
             return feature_maps, self.fc_decision(z), mu, logvar  # Output logits and latent parameters
